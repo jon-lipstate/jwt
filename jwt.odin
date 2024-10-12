@@ -181,7 +181,6 @@ parse_token :: proc(str: string, allocator := context.allocator) -> Token {
 }
 
 verify_token :: proc(token: ^Token, key: []u8, allocator := context.allocator) -> bool {
-	// Step 1: Recreate the signing input (header + payload)
 	header_json, _ := json.marshal(
 		token.header,
 		json.Marshal_Options{sort_maps_by_key = true},
