@@ -2,6 +2,8 @@
 
 This is a JSON Web Token (JWT) library written in Odin. It provides utilities for creating, signing, parsing, and verifying JWT tokens. It uses HMAC and SHA-based algorithms for token signing and verification.
 
+Ref: [RFC7519](https://datatracker.ietf.org/doc/html/rfc7519)
+
 ## Usage
 
 ```odin
