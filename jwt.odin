@@ -33,8 +33,12 @@ _main :: proc() {
 	signing_key := transmute([]u8)KEY
 
 	// Token Creation:
+	// TODO: not in love with json interface for claims, make custom union or..?
+	roles := json.Array{"admin", "user"}
+	defer delete(roles)
 	claims := map[string]Value {
 		"user_id" = 3,
+		"roles"   = roles,
 	}
 	defer delete(claims)
 
