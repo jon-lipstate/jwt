@@ -12,23 +12,27 @@ import "core:crypto/hash"
 
 KEY :: string("a super secret key")
 
+User_Claims :: struct {
+	user_id:    int,
+	first_name: string,
+	last_name:  string,
+}
+
 main :: proc() {
 	signing_key := transmute([]u8)KEY
 
 	// Token Creation:
-	claims := map[string]Value {
-		"user_id" = 3,
-	}
-	defer delete(claims)
-
-	token, ok := make_token(hash.Algorithm.SHA256, claims, 1 * time.Hour)
+	uc := User_Claims{3, "odie", "dog"}
+	token, ok := make_token(hash.Algorithm.SHA256, uc, 1 * time.Hour)
 	tk_str, sign_ok := sign_token(&token, signing_key)
 	defer delete_token(&token)
 
 	// Token Verification:
-	tk := parse_token(tk_str, context.temp_allocator) // Unmarshall allocates here, you should either use temp_allocator or another custom allocator to keep this from leaking
+	tk := parse_token(tk_str, User_Claims, context.temp_allocator)
 	defer delete_token(&tk)
-	is_valid := verify_token(&tk, signing_key) // several temp_allocator uses here
+	is_valid := verify_token(&tk, signing_key)
+
+	fmt.println("is_valid", is_valid)
 
 	free_all(context.temp_allocator)
 }

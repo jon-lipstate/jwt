@@ -40,18 +40,18 @@ User_Claims :: struct {
 _main :: proc() {
 	signing_key := transmute([]u8)KEY
 
-
 	// Token Creation:
 	uc := User_Claims{3, "odie", "dog"}
 	token, ok := make_token(hash.Algorithm.SHA256, uc, 1 * time.Hour)
 	tk_str, sign_ok := sign_token(&token, signing_key)
 	defer delete_token(&token)
+
 	// Token Verification:
 	tk := parse_token(tk_str, User_Claims, context.temp_allocator)
-	fmt.printf("parsed header: %v\n", tk.header)
-	fmt.printf("parsed claims: %#v\n", tk.claims)
 	defer delete_token(&tk)
-	// is_valid := verify_token(&tk, signing_key)
+	is_valid := verify_token(&tk, signing_key)
+
+	fmt.println("is_valid", is_valid)
 
 	free_all(context.temp_allocator)
 }
@@ -68,38 +68,43 @@ Token :: struct($T: typeid) where intrinsics.type_is_struct(T) {
 	header:    JWT_Header,
 	signature: []byte,
 	is_valid:  bool,
-	claims:    T,
+	claims:    Claims(T),
 }
 
-// Standard_Claims :: struct {
-// 	issuer:     Maybe(string), // "iss"
-// 	subject:    Maybe(string), // "sub"
-// 	audience:   Maybe(string), // "aud"
-// 	expiration: Maybe(i64), // "exp" (Unix time)
-// 	not_before: Maybe(i64), // "nbf" (Unix time)
-// 	issued_at:  Maybe(i64), // "iat" (Unix time)
-// 	id:         Maybe(string), // "jti" (JWT ID)
-// }
+Claims :: struct($T: typeid) {
+	standard: Standard_Claims,
+	custom:   T,
+}
+
+Standard_Claims :: struct {
+	issuer:     Maybe(string) `json:"iss,omitempty"`, // "iss"
+	subject:    Maybe(string) `json:"sub,omitempty"`, // "sub"
+	audience:   Maybe(string) `json:"aud,omitempty"`, // "aud"
+	expiration: Maybe(i64) `json:"exp,omitempty"`, // "exp" (Unix time in SECONDS)
+	not_before: Maybe(i64) `json:"nbf,omitempty"`, // "nbf" (Unix time in SECONDS)
+	issued_at:  Maybe(i64) `json:"iat,omitempty"`, // "iat" (Unix time in SECONDS)
+	id:         Maybe(string) `json:"jti,omitempty"`, // "jti" (JWT ID)
+}
 
 JWT_Header :: struct {
-	alg:  string, // Required: Signing algorithm (e.g., "HS256", "RS256")
-	typ:  Maybe(string), // Optional: Type (e.g., "JWT")
-	kid:  Maybe(string), // Optional: Key ID
-	cty:  Maybe(string), // Optional: Content Type (e.g., "JWT")
-	jku:  Maybe(string), // Optional: URI for JSON Web Key Set
-	x5u:  Maybe(string), // Optional: URI for X.509 Certificate
-	x5t:  Maybe(string), // Optional: X.509 Certificate SHA-1 Thumbprint
-	x5c:  Maybe([]string), // Optional: X.509 Certificate Chain (array of strings)
-	crit: Maybe([]string), // Optional: Critical header fields that must be understood
-	udf:  Maybe(map[string]string), // Optional: User-Defined Fields
+	algorithm:       string `json:"alg"`, // Required: Signing algorithm (e.g., "HS256", "RS256")
+	token_type:      Maybe(string) `json:"typ,omitempty"`, // Optional: Type (e.g., "JWT")
+	key_id:          Maybe(string) `json:"kid,omitempty"`, // Optional: Key ID
+	content_type:    Maybe(string) `json:"cty,omitempty"`, // Optional: Content Type (e.g., "JWT")
+	jwk_set_uri:     Maybe(string) `json:"jku,omitempty"`, // Optional: URI for JSON Web Key Set
+	x509_uri:        Maybe(string) `json:"x5u,omitempty"`, // Optional: URI for X.509 Certificate
+	x509_thumbprint: Maybe(string) `json:"x5t,omitempty"`, // Optional: X.509 Certificate SHA-1 Thumbprint
+	x509_chain:      Maybe([]string) `json:"x5c,omitempty"`, // Optional: X.509 Certificate Chain (array of strings)
+	critical:        Maybe([]string) `json:"crit,omitempty"`, // Optional: Critical header fields that must be understood
+	user_defined:    Maybe(map[string]string) `json:"udf,omitempty"`, // Optional: User-Defined Fields
 }
 
 
 //<base64url(header)>.<base64url(payload)>.<signature>
 delete_token :: proc(t: ^Token($T)) {
-	udf, has_udf := t.header.udf.(map[string]string);if has_udf {delete(udf)} 	// fixme: dealloc the strings too
-	x5c, has_x5c := t.header.x5c.([]string);if has_x5c {delete(x5c)} 	// fixme: dealloc the strings too
-	crit, has_crit := t.header.crit.([]string);if has_crit {delete(crit)} 	// fixme: dealloc the strings too
+	user_defined, has_user_defined := t.header.user_defined.(map[string]string);if has_user_defined {delete(user_defined)} 	// fixme: dealloc the strings too
+	x509_chain, has_x509_chain := t.header.x509_chain.([]string);if has_x509_chain {delete(x509_chain)} 	// fixme: dealloc the strings too
+	critical, has_critical := t.header.critical.([]string);if has_critical {delete(critical)} 	// fixme: dealloc the strings too
 	delete(t.signature)
 	delete(t.str)
 }
@@ -119,10 +124,10 @@ make_token :: proc(
 	}
 	token = Token(T) {
 		method = alg,
-		header = {alg = alg_str, typ = "JWT"},
+		header = {algorithm = alg_str, token_type = "JWT"},
 		signature = nil,
 		is_valid = false,
-		claims = claims,
+		claims = {standard = {expiration = into_seconds_from_now(expires_in)}, custom = claims},
 	}
 	// exp := into_seconds_from_now(expires_in)
 	// token.claims["exp"] = exp
@@ -141,8 +146,6 @@ sign_token :: proc(token: ^Token($T), key: []u8) -> (token_string: string, ok: b
 		json.Marshal_Options{sort_maps_by_key = true},
 		allocator = context.temp_allocator,
 	)
-
-	fmt.printf("%#v\n", string(claims_json))
 
 	header_base64, _ := base64.encode(
 		transmute([]byte)header_json,
@@ -181,9 +184,17 @@ into_seconds_from_now :: proc(d: time.Duration) -> i64 {
 }
 
 // // WARNING: unmarshall will leak if you dont free it, strongly suggest an Arena or other clearable allocator
-parse_token :: proc(str: string, $T: typeid, allocator := context.allocator) -> Token(T) {
+parse_token :: proc(
+	str: string,
+	$T: typeid,
+	allocator := context.allocator,
+) -> (
+	token: Token(T),
+	ok: bool,
+) #optional_ok {
 
 	parts := strings.split(str, ".", allocator = context.temp_allocator)
+
 	if len(parts) != 3 {
 		panic("Invalid token structure. Expected 3 parts.")
 	}
@@ -191,76 +202,74 @@ parse_token :: proc(str: string, $T: typeid, allocator := context.allocator) -> 
 	header_bytes, _ := base64.decode(parts[0], allocator = context.temp_allocator)
 	claims_bytes, _ := base64.decode(parts[1], allocator = context.temp_allocator)
 	signature_bytes, _ := base64.decode(parts[2], allocator = allocator) // RETAIN
-	token := Token(T) {
+	token = Token(T) {
 		str       = str,
-		method    = hash.Algorithm.SHA256, // FIXME: read method from header!!
 		header    = JWT_Header{}, // RETAIN
 		signature = signature_bytes,
 		is_valid  = false,
-		claims    = T{},
 	}
 	json.unmarshal(header_bytes, &token.header, allocator = allocator) // RETAIN
 	json.unmarshal(claims_bytes, &token.claims, allocator = allocator) // RETAIN
 
-	fmt.println("TK-CLAIMS", token.claims)
-	// free_all(context.temp_allocator)
+	alg := token.header.algorithm
+	alg_enum, has_algo := JWT_ALGORITHM_MAP[alg]
+	if !has_algo {return {}, false}
+	token.method = alg_enum
 
-	return token
+	return token, true
 }
 
-// verify_token :: proc(token: ^Token, key: []u8, allocator := context.allocator) -> bool {
-// 	header_json, _ := json.marshal(
-// 		token.header,
-// 		json.Marshal_Options{sort_maps_by_key = true},
-// 		allocator = context.temp_allocator,
-// 	)
-// 	claims_json, _ := json.marshal(
-// 		token.claims,
-// 		json.Marshal_Options{sort_maps_by_key = true},
-// 		allocator = context.temp_allocator,
-// 	)
+verify_token :: proc(token: ^Token($T), key: []u8, allocator := context.allocator) -> bool {
+	header_json, _ := json.marshal(
+		token.header,
+		json.Marshal_Options{sort_maps_by_key = true},
+		allocator = context.temp_allocator,
+	)
+	claims_json, _ := json.marshal(
+		token.claims,
+		json.Marshal_Options{sort_maps_by_key = true},
+		allocator = context.temp_allocator,
+	)
 
-// 	header_base64, _ := base64.encode(
-// 		transmute([]byte)header_json,
-// 		allocator = context.temp_allocator,
-// 	)
-// 	claims_base64, _ := base64.encode(
-// 		transmute([]byte)claims_json,
-// 		allocator = context.temp_allocator,
-// 	)
+	header_base64, _ := base64.encode(
+		transmute([]byte)header_json,
+		allocator = context.temp_allocator,
+	)
+	claims_base64, _ := base64.encode(
+		transmute([]byte)claims_json,
+		allocator = context.temp_allocator,
+	)
 
-// 	signing_input := strings.join(
-// 		{header_base64, claims_base64},
-// 		".",
-// 		allocator = context.temp_allocator,
-// 	)
+	signing_input := strings.join(
+		{header_base64, claims_base64},
+		".",
+		allocator = context.temp_allocator,
+	)
 
-// 	computed_signature, _ := mem.make_aligned(
-// 		[]byte,
-// 		hash.DIGEST_SIZES[token.method],
-// 		16,
-// 		allocator = context.temp_allocator,
-// 	)
+	computed_signature, _ := mem.make_aligned(
+		[]byte,
+		hash.DIGEST_SIZES[token.method],
+		16,
+		allocator = context.temp_allocator,
+	)
 
-// 	hmac.sum(token.method, computed_signature, transmute([]byte)signing_input, key)
+	hmac.sum(token.method, computed_signature, transmute([]byte)signing_input, key)
 
-// 	token.is_valid = crypto.compare_constant_time(computed_signature, token.signature) == 1
+	token.is_valid = crypto.compare_constant_time(computed_signature, token.signature) == 1
 
-// 	token.is_valid &= !is_token_expired(token)
+	token.is_valid &= !is_token_expired(token)
 
-// 	return token.is_valid
-// }
-// // seconds resolution
-// is_token_expired :: proc(t: ^Token) -> bool {
-// 	assert(t.claims != nil, "Nil claims map on Token")
+	return token.is_valid
+}
+// seconds resolution
+is_token_expired :: proc(t: ^Token($T)) -> bool {
+	exp, has_exp := t.claims.standard.expiration.(i64)
+	if !has_exp {return true}
 
-// 	exp, has_exp := t.claims["exp"].(json.Integer)
-// 	if !has_exp {return true}
-
-// 	diff := time.diff(time.now(), time.Time{exp * 1E9})
-// 	is_expired := int(diff / 1E9) < 0
-// 	return is_expired
-// }
+	diff := time.diff(time.now(), time.Time{exp * 1E9})
+	is_expired := int(diff / 1E9) < 0
+	return is_expired
+}
 
 @(private)
 alg_to_str :: proc(alg: Algorithm) -> (name: string, found: bool) {
